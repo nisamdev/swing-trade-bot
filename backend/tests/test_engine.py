@@ -80,12 +80,12 @@ def engine(tmp_path):
     return build
 
 
-async def configure(eng, **rules):
+async def configure(eng, auto=True, **rules):
     await eng.save_config({
         "watchlist": ["AAA", "BBB", "CCC", "DDD"],
         "rules": {**asdict(Rules(strategy="buy_the_dip")), **rules},
         "money": asdict(Money(max_open_positions=3)),
-        "auto_trade": True,
+        "auto_trade": auto,
     })
 
 
@@ -190,7 +190,8 @@ async def test_an_unfilled_order_is_not_written_off_as_closed(engine):
     threw away the trade before it existed — and with it the time stop."""
     market = FakeMarket(open_market=True, pending=["AAA"])
     eng = engine(market)
-    await configure(eng)
+    # Suggest-only, so the round cannot muddy the journal with fresh buys.
+    await configure(eng, auto=False)
     await eng.store.record_buy("AAA", "buy_the_dip", 10, 90.0, 120.0, "test", "o1")
 
     await eng.run_round()
@@ -203,7 +204,7 @@ async def test_an_unfilled_order_is_not_written_off_as_closed(engine):
 async def test_a_position_that_really_did_close_is_marked_closed(engine):
     market = FakeMarket(open_market=True)  # no position, no pending order
     eng = engine(market)
-    await configure(eng)
+    await configure(eng, auto=False)
     await eng.store.record_buy("AAA", "buy_the_dip", 10, 90.0, 120.0, "test", "o1")
 
     await eng.run_round()
