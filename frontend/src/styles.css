@@ -1,0 +1,740 @@
+/* ==========================================================================
+   Swing — visual system
+
+   The idea: this is graph paper on a drafting table, not a trading terminal.
+   Swing trading is the patient opposite of day trading — you look once a day —
+   so nothing here blinks, ticks, or glows. The page's own background is a
+   chart grid, and the charts are plotted straight onto it rather than being
+   dropped into boxes, because the grid is the subject's native material.
+
+   Everything is a token, so light and dark are the same layout twice.
+   ========================================================================== */
+
+:root {
+  /* Cool chart paper. Deliberately blue-grey, never cream. */
+  --paper:    #EBEFF1;
+  --card:     #F8FAFB;
+  --sunk:     #E1E7EA;
+  --ink:      #14212B;
+  --muted:    #5C707C;
+  --faint:    #8B9BA5;
+  --rule:     #CBD7DD;
+  --rule-soft:#DCE4E8;
+
+  --tide:     #12626E;   /* the one brand colour: deep, patient teal */
+  --tide-ink: #0C454E;
+  --tide-wash:#DCEAEC;
+
+  --gain:     #1C7A57;
+  --gain-wash:#DCEDE5;
+  --loss:     #B24A2B;
+  --loss-wash:#F3E2DB;
+  --hold:     #A87614;
+  --hold-wash:#F3EAD5;
+
+  --grid-size: 28px;
+
+  --font-display: 'Bricolage Grotesque', 'Public Sans', system-ui, sans-serif;
+  --font-body: 'Public Sans', system-ui, -apple-system, sans-serif;
+  --font-data: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  --radius: 3px;
+  --shadow: 0 1px 2px rgba(20, 33, 43, .06), 0 8px 24px -12px rgba(20, 33, 43, .16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper:    #0E1920;
+    --card:     #15242D;
+    --sunk:     #0A1319;
+    --ink:      #E3EDF1;
+    --muted:    #93A8B3;
+    --faint:    #637985;
+    --rule:     #243944;
+    --rule-soft:#1B2C35;
+
+    --tide:     #4FB3C0;
+    --tide-ink: #8AD3DC;
+    --tide-wash:#12313A;
+
+    --gain:     #43C08D;
+    --gain-wash:#11332A;
+    --loss:     #E58A63;
+    --loss-wash:#3A211A;
+    --hold:     #E0B455;
+    --hold-wash:#332913;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -14px rgba(0, 0, 0, .7);
+  }
+}
+
+[data-theme='dark'] {
+  --paper:    #0E1920;
+  --card:     #15242D;
+  --sunk:     #0A1319;
+  --ink:      #E3EDF1;
+  --muted:    #93A8B3;
+  --faint:    #637985;
+  --rule:     #243944;
+  --rule-soft:#1B2C35;
+  --tide:     #4FB3C0;
+  --tide-ink: #8AD3DC;
+  --tide-wash:#12313A;
+  --gain:     #43C08D;
+  --gain-wash:#11332A;
+  --loss:     #E58A63;
+  --loss-wash:#3A211A;
+  --hold:     #E0B455;
+  --hold-wash:#332913;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px -14px rgba(0, 0, 0, .7);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--ink);
+  background-color: var(--paper);
+  /* The signature: the page itself is graph paper. Every chart is drawn on
+     this same grid, at the same pitch, so charts read as plotted rather than
+     pasted in. */
+  background-image:
+    linear-gradient(var(--rule-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rule-soft) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--tide);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* ==========================================================================
+   Type
+   ========================================================================== */
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+h1 { font-size: clamp(1.9rem, 4vw, 2.9rem); font-variation-settings: 'wdth' 95; }
+h2 { font-size: 1.35rem; }
+h3 { font-size: 1.02rem; letter-spacing: -0.01em; }
+
+.eyebrow {
+  font-family: var(--font-data);
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.lede { font-size: 1.02rem; color: var(--muted); max-width: 62ch; }
+.small { font-size: .82rem; color: var(--muted); }
+.tiny  { font-size: .74rem; color: var(--faint); }
+.num   { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+.gain { color: var(--gain); }
+.loss { color: var(--loss); }
+
+/* ==========================================================================
+   Shell — a left spine that reads as a chart's y-axis
+   ========================================================================== */
+
+.shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+
+.spine {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 26px 0 20px;
+  background: var(--card);
+  border-right: 1px solid var(--rule);
+}
+
+.brand { padding: 0 24px 22px; }
+.brand-mark {
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  font-weight: 800;
+  font-variation-settings: 'wdth' 82;
+  letter-spacing: -.03em;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.brand-mark svg { flex: none; }
+.brand-sub { font-size: .76rem; color: var(--faint); margin-top: 2px; }
+
+.spine-nav { display: flex; flex-direction: column; gap: 1px; padding: 0 12px; }
+
+.tab {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  font-family: var(--font-body);
+  font-size: .93rem;
+  font-weight: 500;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.tab:hover { background: var(--sunk); color: var(--ink); }
+.tab[aria-current='page'] { background: var(--tide-wash); color: var(--tide-ink); font-weight: 600; }
+.tab-key {
+  font-family: var(--font-data);
+  font-size: .68rem;
+  color: var(--faint);
+  min-width: 1.1em;
+}
+.tab[aria-current='page'] .tab-key { color: var(--tide); }
+
+.spine-foot { margin-top: auto; padding: 16px 24px 0; border-top: 1px solid var(--rule); }
+
+.main { min-width: 0; }
+.page { max-width: 1120px; padding: 34px clamp(20px, 4vw, 48px) 80px; }
+
+.page-head { margin-bottom: 26px; }
+.page-head h1 { margin: 6px 0 8px; }
+
+/* ==========================================================================
+   The paper-money banner — this must never be mistaken for real trading
+   ========================================================================== */
+
+.ribbon {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 9px clamp(20px, 4vw, 48px);
+  background: var(--tide);
+  color: #F4FAFB;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--tide-ink);
+}
+.ribbon strong { font-family: var(--font-data); font-weight: 600; letter-spacing: .04em; }
+.ribbon.is-live { background: var(--loss); }
+.ribbon-spacer { margin-left: auto; }
+.ribbon button {
+  background: rgba(255,255,255,.14);
+  border: 1px solid rgba(255,255,255,.28);
+  color: inherit;
+  font: inherit;
+  padding: 2px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.ribbon button:hover { background: rgba(255,255,255,.24); }
+
+/* ==========================================================================
+   Surfaces
+   ========================================================================== */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+.card + .card { margin-top: 16px; }
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.section { margin-bottom: 34px; }
+.section > .eyebrow { display: block; margin-bottom: 8px; }
+.section-q {
+  font-family: var(--font-display);
+  font-size: 1.28rem;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  margin-bottom: 4px;
+}
+
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+/* ==========================================================================
+   Numbers
+   ========================================================================== */
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.stat { background: var(--card); padding: 15px 17px; }
+.stat-label {
+  font-size: .74rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+.stat-value {
+  font-family: var(--font-data);
+  font-size: 1.32rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
+}
+.stat-note { font-size: .74rem; color: var(--faint); margin-top: 3px; }
+
+.headline-number {
+  font-family: var(--font-data);
+  font-size: clamp(2.4rem, 6vw, 3.6rem);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.045em;
+  line-height: 1;
+}
+
+/* A hoverable "?" that explains a piece of jargon in plain words. */
+.what {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  font-family: var(--font-data);
+  font-size: .58rem;
+  color: var(--faint);
+  cursor: help;
+  flex: none;
+}
+.what:hover { border-color: var(--tide); color: var(--tide); }
+
+/* ==========================================================================
+   The verdict — the one loud element on the page
+   ========================================================================== */
+
+.verdict {
+  border: 1px solid var(--rule);
+  border-left: 5px solid var(--tide);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 26px 28px;
+}
+.verdict.is-go   { border-left-color: var(--gain); background: var(--gain-wash); }
+.verdict.is-caution { border-left-color: var(--hold); background: var(--hold-wash); }
+.verdict.is-stop { border-left-color: var(--loss); background: var(--loss-wash); }
+.verdict.is-no-trades { border-left-color: var(--faint); }
+
+.verdict h2 {
+  font-size: clamp(1.5rem, 3.4vw, 2.05rem);
+  font-variation-settings: 'wdth' 90;
+  margin: 7px 0 10px;
+}
+.verdict p { max-width: 68ch; color: var(--ink); }
+.verdict .advice {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+  font-size: .92rem;
+  color: var(--muted);
+}
+
+.checks { list-style: none; margin-top: 18px; display: grid; gap: 1px; }
+.check {
+  display: grid;
+  grid-template-columns: 22px minmax(130px, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--rule);
+}
+.check-mark { font-family: var(--font-data); font-weight: 600; }
+.check-mark.good { color: var(--gain); }
+.check-mark.warn { color: var(--hold); }
+.check-mark.bad  { color: var(--loss); }
+.check-mark.info { color: var(--faint); }
+.check-name { font-weight: 600; font-size: .92rem; }
+.check-note { grid-column: 2 / -1; font-size: .84rem; color: var(--muted); margin-top: 2px; }
+.check-value { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   Charts — plotted on the page grid, not boxed
+   ========================================================================== */
+
+.plot { position: relative; margin: 8px 0 4px; }
+.plot svg { display: block; width: 100%; height: auto; overflow: visible; }
+.plot-legend {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  font-size: .78rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.plot-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.swatch { width: 16px; height: 0; border-top-width: 2px; border-top-style: solid; }
+
+.plot-axis { font-family: var(--font-data); font-size: 10px; fill: var(--faint); }
+.plot-gridline { stroke: var(--rule); stroke-width: 1; }
+
+/* ==========================================================================
+   Controls
+   ========================================================================== */
+
+label { display: block; }
+.field { margin-bottom: 15px; }
+.field-label { font-weight: 600; font-size: .88rem; margin-bottom: 3px; display: block; }
+.field-help { font-size: .8rem; color: var(--muted); margin-bottom: 7px; }
+
+input[type='text'], input[type='number'], input[type='date'], select, textarea {
+  width: 100%;
+  padding: 8px 11px;
+  font-family: var(--font-body);
+  font-size: .92rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+input.num, .num input { font-family: var(--font-data); }
+input:focus, select:focus, textarea:focus { border-color: var(--tide); outline: none; box-shadow: 0 0 0 3px var(--tide-wash); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 17px;
+  font-family: var(--font-body);
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--card);
+  background: var(--tide);
+  border: 1px solid var(--tide);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background .12s, transform .06s;
+}
+.btn:hover:not(:disabled) { background: var(--tide-ink); border-color: var(--tide-ink); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.ghost { background: transparent; color: var(--ink); border-color: var(--rule); }
+.btn.ghost:hover:not(:disabled) { background: var(--sunk); border-color: var(--faint); }
+.btn.danger { background: transparent; color: var(--loss); border-color: var(--loss); }
+.btn.danger:hover:not(:disabled) { background: var(--loss-wash); }
+.btn.small { padding: 5px 11px; font-size: .8rem; }
+
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: var(--radius); overflow: hidden; }
+.seg button {
+  padding: 6px 13px;
+  font-family: var(--font-body);
+  font-size: .84rem;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--card);
+  border: 0;
+  border-right: 1px solid var(--rule);
+  cursor: pointer;
+}
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed='true'] { background: var(--tide); color: var(--card); font-weight: 600; }
+
+/* A switch that says what it does, because "auto trade" alone means nothing. */
+.switch { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-track {
+  flex: none;
+  width: 40px;
+  height: 23px;
+  margin-top: 2px;
+  border-radius: 12px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  position: relative;
+  transition: background .15s;
+}
+.switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 17px; height: 17px;
+  border-radius: 50%;
+  background: var(--card);
+  transition: transform .15s;
+}
+.switch input:checked + .switch-track { background: var(--gain); border-color: var(--gain); }
+.switch input:checked + .switch-track::after { transform: translateX(17px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--tide); outline-offset: 2px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px 3px 9px;
+  font-family: var(--font-data);
+  font-size: .8rem;
+  font-weight: 500;
+  background: var(--sunk);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.chip button {
+  border: 0; background: none; color: var(--faint);
+  cursor: pointer; font-size: .9rem; line-height: 1; padding: 0 3px;
+}
+.chip button:hover { color: var(--loss); }
+
+/* ==========================================================================
+   Strategy picker
+   ========================================================================== */
+
+.pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); gap: 14px; }
+.pick-card {
+  text-align: left;
+  padding: 18px 19px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  color: inherit;
+  transition: border-color .12s, box-shadow .12s;
+}
+.pick-card:hover { border-color: var(--tide); }
+.pick-card[aria-pressed='true'] {
+  border-color: var(--tide);
+  box-shadow: inset 3px 0 0 var(--tide), var(--shadow);
+  background: var(--tide-wash);
+}
+.pick-card h3 { margin-bottom: 5px; }
+.pick-card p { font-size: .87rem; color: var(--muted); }
+.pick-card .best-for { font-size: .78rem; color: var(--faint); margin-top: 9px; }
+
+/* The rules ARE a numbered sequence — they are checked in order, and a later
+   rule only matters if the earlier ones passed. So the numbers carry meaning. */
+.recipe { list-style: none; counter-reset: step; margin-top: 6px; }
+.recipe li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--rule-soft);
+  font-size: .9rem;
+}
+.recipe li::before {
+  content: counter(step);
+  font-family: var(--font-data);
+  font-size: .74rem;
+  color: var(--tide);
+  padding-top: 3px;
+}
+
+/* ==========================================================================
+   Tables
+   ========================================================================== */
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--card); }
+table { width: 100%; border-collapse: collapse; font-size: .87rem; }
+th {
+  text-align: left;
+  font-family: var(--font-data);
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+  background: var(--card);
+}
+td { padding: 10px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--sunk); }
+td.n, th.n { text-align: right; font-family: var(--font-data); font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.sym { font-family: var(--font-data); font-weight: 600; }
+td.why { color: var(--muted); font-size: .82rem; min-width: 220px; }
+
+/* ==========================================================================
+   Signal list — what the bot thinks about each stock right now
+   ========================================================================== */
+
+.signals { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--radius); }
+.signal {
+  display: grid;
+  grid-template-columns: 78px 96px 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  background: var(--card);
+}
+.signal-sym { font-family: var(--font-data); font-weight: 600; font-size: .95rem; }
+.signal-price { font-family: var(--font-data); font-size: .87rem; color: var(--muted); }
+.signal-why { font-size: .86rem; color: var(--muted); }
+.signal.is-buy { background: var(--gain-wash); }
+.signal.is-buy .signal-why { color: var(--ink); }
+
+.signal-end { display: flex; align-items: center; gap: 10px; justify-self: end; }
+
+/* Status labels. Never interactive — an action next to one is a real button. */
+.pill {
+  display: inline-block;
+  padding: 2px 9px;
+  font-family: var(--font-data);
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.pill.buy  { background: var(--gain); color: var(--card); }
+.pill.wait { background: var(--sunk); color: var(--muted); }
+.pill.warn { background: var(--hold-wash); color: var(--hold); }
+.pill.bad  { background: var(--loss-wash); color: var(--loss); }
+
+/* ==========================================================================
+   Feedback
+   ========================================================================== */
+
+.notice {
+  display: flex;
+  gap: 11px;
+  padding: 13px 16px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--faint);
+  border-radius: var(--radius);
+  background: var(--card);
+  font-size: .89rem;
+  margin-bottom: 16px;
+}
+.notice.bad  { border-left-color: var(--loss); background: var(--loss-wash); }
+.notice.warn { border-left-color: var(--hold); background: var(--hold-wash); }
+.notice.good { border-left-color: var(--gain); background: var(--gain-wash); }
+
+/* Sticky save bar. Needs its own opaque ground and a rule above it, or it
+   reads as a button floating loose over the card it is scrolling past. */
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 8px -8px 0;
+  padding: 14px 8px;
+  background: var(--paper);
+  border-top: 1px solid var(--rule);
+  box-shadow: 0 -10px 18px -14px rgba(20, 33, 43, .5);
+}
+
+/* ==========================================================================
+   Confirm sheet — used before anything spends money
+   ========================================================================== */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 18px 18px;
+  background: rgba(10, 19, 25, .55);
+  overflow-y: auto;
+}
+.sheet {
+  width: min(620px, 100%);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px 24px 24px;
+}
+.sheet h2 { margin-top: 4px; }
+
+.empty { padding: 40px 24px; text-align: center; color: var(--muted); }
+.empty h3 { margin-bottom: 6px; color: var(--ink); }
+.empty p { max-width: 46ch; margin: 0 auto; font-size: .89rem; }
+
+/* A patient, slow pulse — this app waits, it does not race. */
+.working { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); font-size: .88rem; }
+.working::before {
+  content: '';
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--tide);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+@keyframes breathe { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+
+.log { font-family: var(--font-data); font-size: .78rem; display: grid; gap: 1px; }
+.log-line { display: grid; grid-template-columns: 128px 1fr; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--rule-soft); }
+.log-line time { color: var(--faint); }
+.log-line.error span { color: var(--loss); }
+.log-line.action span { color: var(--tide-ink); }
+.log-line.suggestion span { color: var(--hold); }
+
+/* ==========================================================================
+   Narrow screens
+   ========================================================================== */
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .spine {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 18px;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+  }
+  .brand { padding: 0; }
+  .brand-sub { display: none; }
+  .spine-nav { flex-direction: row; padding: 0; }
+  /* The rail scrolls sideways here, so tabs stay on one line rather than
+     wrapping "Test an idea" into a three-line column. */
+  .tab { white-space: nowrap; }
+  .spine-foot { display: none; }
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .signal { grid-template-columns: 1fr auto; }
+  .signal-price { display: none; }
+  .signal-why { grid-column: 1 / -1; }
+}

@@ -1,0 +1,36 @@
+# Two containers: the Python API and the web app. Nothing else -- the database
+# is a single SQLite file under ./data, so there is no server to run.
+#
+#   docker compose up --build
+#   open http://localhost:5180
+
+services:
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      # Inside the compose network the browser still calls localhost, so the
+      # allowed origin is the port you actually open in your browser.
+      CORS_ORIGINS: http://localhost:${FRONTEND_PORT:-5180}
+      DATABASE_PATH: /data/swing.db
+    volumes:
+      - ./backend:/app          # edit Python and it reloads
+      - ./data:/data            # your database survives a rebuild
+    ports:
+      - "${BACKEND_PORT:-8020}:8020"
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    environment:
+      # Vite forwards /api to the container above, so the browser never makes
+      # a cross-origin request and there is nothing to configure.
+      API_TARGET: http://api:8020
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules       # keep the container's install, not the host's
+    ports:
+      - "${FRONTEND_PORT:-5180}:5180"
+    depends_on:
+      - api
+    restart: unless-stopped
