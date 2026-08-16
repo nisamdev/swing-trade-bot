@@ -20,10 +20,12 @@ from dataclasses import dataclass
 from .indicators import (
     Series,
     atr_series,
+    ema_series,
     rolling_max,
     rsi_series,
     sma_series,
 )
+from .levels import Landscape
 from .models import Bar, Rules, Verdict, SimTrade
 
 
@@ -36,7 +38,8 @@ class Chart:
     high: list[float]
     low: list[float]
     volume: list[float]
-    trend: Series  # long-term average, the "is this stock healthy" line
+    trend: Series  # the 200-day line: "is this stock healthy?"
+    ema_fast: Series  # the 8-day line: "is it still moving my way right now?"
     atr: Series
     rsi: Series
     fast: Series
@@ -44,9 +47,26 @@ class Chart:
     highest: Series  # highest high over the breakout window
     vol_avg: Series
     rules: Rules
+    # Support, resistance and supply/demand zones. Built lazily because a
+    # backtest over a hundred symbols does not always need them.
+    _landscape: Landscape | None = None
 
     def __len__(self) -> int:
         return len(self.bars)
+
+    @property
+    def landscape(self) -> Landscape:
+        if self._landscape is None:
+            self._landscape = Landscape(
+                self.bars,
+                self.atr,
+                pivot_reach=self.rules.pivot_reach,
+                level_tolerance_percent=self.rules.level_tolerance_percent,
+                min_touches=self.rules.min_touches,
+                zone_impulse_atr=self.rules.zone_impulse_atr,
+                zone_base_bars=self.rules.zone_base_bars,
+            )
+        return self._landscape
 
 
 def build_chart(bars: Sequence[Bar], rules: Rules) -> Chart:
@@ -63,6 +83,7 @@ def build_chart(bars: Sequence[Bar], rules: Rules) -> Chart:
         low=low,
         volume=volume,
         trend=sma_series(close, rules.trend_days),
+        ema_fast=ema_series(close, rules.fast_ema_days),
         atr=atr_series(high, low, close, rules.atr_days),
         rsi=rsi_series(close, rules.rsi_days),
         fast=sma_series(close, rules.fast_days),
@@ -318,8 +339,207 @@ class TrendChange(Strategy):
         return None
 
 
+class ZoneBounce(Strategy):
+    key = "zone_bounce"
+    name = "Bounce off a shelf"
+    tagline = "Buy where buyers showed up in force last time, the first time price returns."
+    best_for = (
+        "Anyone who reads charts by hand. This is the closest to how a discretionary "
+        "swing trader actually trades, with the judgement written down as rules."
+    )
+    how_it_works = [
+        "Check the stock is in a long-term uptrend — above its 200-day average price.",
+        "Find a demand shelf: a quiet patch of trading that price then shot away from, which means buyers were waiting there in size.",
+        "Wait for price to come back down and touch that shelf — and only count it if price has not already been back several times, because a shelf gets eaten away each visit.",
+        "Buy when it stops falling and closes back above the shelf, not while it is still dropping through it.",
+        "Put the stop just under the shelf, and the target just under the next ceiling of sellers above. Skip the trade if that target is not worth the risk.",
+    ]
+    uses = [
+        "use_trend_filter",
+        "trend_days",
+        "zone_impulse_atr",
+        "zone_base_bars",
+        "zone_max_tests",
+        "pivot_reach",
+        "min_reward_risk",
+        "atr_days",
+        "stop_atr",
+        "target_atr",
+        "max_hold_days",
+    ]
+
+    def entry(self, c: Chart, i: int) -> Verdict:
+        if i < 1:
+            return Verdict(False, "Warming up — not enough price history yet")
+        if c.atr[i] is None:
+            return Verdict(False, "Warming up — not enough price history yet")
+
+        blocked = _trend_check(c, i)
+        if blocked:
+            return Verdict(False, blocked)
+
+        land = c.landscape
+        zone = land.standing_in(i, "demand", c.rules.zone_max_tests)
+        if zone is None:
+            near = land.demand_below(i, c.close[i], c.rules.zone_max_tests)
+            if near is None:
+                return Verdict(
+                    False,
+                    "No fresh demand shelf below — nothing here worth waiting for",
+                )
+            away = (c.close[i] - near.top) / c.close[i] * 100
+            return Verdict(
+                False,
+                f"Waiting — the nearest demand shelf (${near.bottom:,.2f}–"
+                f"${near.top:,.2f}) is {away:.1f}% below today's price",
+            )
+
+        # Do not buy while it is still cutting through the shelf.
+        if c.close[i] < zone.top and c.close[i] <= c.close[i - 1]:
+            return Verdict(
+                False,
+                f"In the demand shelf (${zone.bottom:,.2f}–${zone.top:,.2f}) but "
+                f"still falling — waiting for it to turn back up",
+            )
+
+        visits = zone.tests_before(i)
+        freshness = (
+            "untouched since it formed" if visits == 0
+            else f"back for visit {visits + 1}"
+        )
+        return Verdict(
+            True,
+            f"Price came back to a demand shelf at ${zone.bottom:,.2f}–"
+            f"${zone.top:,.2f} ({freshness}, price left it "
+            f"{zone.impulse_atr:.1f}× faster than a normal day) and closed back up",
+            {"zone": zone.as_dict()},
+        )
+
+
+@dataclass(frozen=True)
+class ExitPlan:
+    """Where to get out, and why there."""
+
+    stop: float
+    target: float
+    stop_reason: str
+    target_reason: str
+
+    def reward_risk(self, entry: float) -> float:
+        """Dollars of target per dollar of stop. Below 1 means the trade needs
+        to be right more often than not just to break even."""
+        risk = entry - self.stop
+        if risk <= 0:
+            return 0.0
+        return (self.target - entry) / risk
+
+
+def plan_exits(c: Chart, i: int, entry: float) -> ExitPlan:
+    """Decide the stop and target for a trade opened at `entry`.
+
+    Prefers real levels over arithmetic. A stop 2× the daily range below the
+    entry is a number with no opinion about the chart; a stop just under the
+    shelf that price bounced off is a statement — "if buyers there give up, I
+    was wrong". Same for the target: aiming through a wall of sellers is how a
+    winning trade turns into a round trip.
+
+    Falls back to the ATR multiples whenever the chart has nothing to say,
+    which is often, and that is fine.
+    """
+    atr = c.atr[i] or 0.0
+    stop = entry - c.rules.stop_atr * atr
+    target = entry + c.rules.target_atr * atr
+    stop_reason = f"{c.rules.stop_atr:g}× the stock's normal daily range below entry"
+    target_reason = f"{c.rules.target_atr:g}× the normal daily range above entry"
+
+    if not c.rules.use_levels_for_exits or atr <= 0:
+        return ExitPlan(stop, target, stop_reason, target_reason)
+
+    land = c.landscape
+    buffer = 0.25 * atr  # a little room, so ordinary noise does not trip it
+
+    # Stop: under the shelf we are standing on, else under the nearest floor.
+    zone = land.standing_in(i, "demand", c.rules.zone_max_tests) or land.demand_below(
+        i, entry, c.rules.zone_max_tests
+    )
+    if zone is not None and zone.bottom < entry:
+        candidate = zone.bottom - buffer
+        # Only if it is not absurdly far -- a huge shelf would mean a huge loss.
+        if entry - candidate <= 3.0 * c.rules.stop_atr * atr:
+            stop, stop_reason = (
+                candidate,
+                f"just under the demand shelf at ${zone.bottom:,.2f}",
+            )
+    else:
+        support = land.support_below(i, entry)
+        if support is not None:
+            candidate = support.price - buffer
+            if entry - candidate <= 3.0 * c.rules.stop_atr * atr:
+                stop, stop_reason = (
+                    candidate,
+                    f"just under support at ${support.price:,.2f}, which has held "
+                    f"{support.strength} times",
+                )
+
+    # Target: stop short of the next ceiling rather than aiming through it.
+    supply = land.supply_above(i, entry)
+    resistance = land.resistance_above(i, entry)
+    ceiling, ceiling_why = None, ""
+    if supply is not None:
+        ceiling, ceiling_why = supply.bottom, f"the supply shelf at ${supply.bottom:,.2f}"
+    if resistance is not None and (ceiling is None or resistance.price < ceiling):
+        ceiling = resistance.price
+        ceiling_why = (
+            f"resistance at ${resistance.price:,.2f}, which has capped price "
+            f"{resistance.strength} times"
+        )
+    if ceiling is not None:
+        candidate = ceiling - buffer
+        if candidate > entry:
+            target, target_reason = candidate, f"just below {ceiling_why}"
+
+    return ExitPlan(stop, target, stop_reason, target_reason)
+
+
+def ema_exit(c: Chart, i: int) -> str | None:
+    """Optional tight trailing exit: a close below the fast line.
+
+    The 8-day exponential average sits right on top of a trending stock, so
+    losing it is the earliest honest sign the move has stalled. It gets you out
+    near the highs when it works — and cuts plenty of trades that would have
+    kept going when it does not. Off by default for that reason.
+    """
+    if not c.rules.use_ema_exit:
+        return None
+    line = c.ema_fast[i]
+    if line is None or c.close[i] >= line:
+        return None
+    return (
+        f"Closed below its {c.rules.fast_ema_days}-day line at ${line:,.2f} — "
+        f"the move has stalled"
+    )
+
+
+def breakdown_exit(c: Chart, i: int, entry_price: float) -> str | None:
+    """Shared across every strategy: a floor gave way, so get out.
+
+    This bot is long-only, so the useful reading of a downside break is "leave",
+    not "bet against it". Shorting needs borrow handling and has no ceiling on
+    the loss — not a first bot's problem to solve.
+    """
+    if not c.rules.use_breakdown_exit:
+        return None
+    level = c.landscape.broke_below(i, entry_price)
+    if level is None:
+        return None
+    return (
+        f"Broke below support at ${level.price:,.2f}, a floor that had held "
+        f"{level.strength} times — getting out"
+    )
+
+
 STRATEGIES: dict[str, Strategy] = {
-    s.key: s for s in (BuyTheDip(), Breakout(), TrendChange())
+    s.key: s for s in (BuyTheDip(), Breakout(), TrendChange(), ZoneBounce())
 }
 
 
@@ -395,6 +615,61 @@ SETTING_HELP: dict[str, dict] = {
         "help": "Follows the price up and locks in gains. Set to 0 to turn it off.",
         "type": "float", "min": 0, "max": 10, "step": 0.25, "unit": "× daily range",
     },
+    "use_ema_exit": {
+        "label": "Sell when it closes below the 8-day line",
+        "help": "A tight trailing exit that gets you out as soon as momentum stalls. Locks in gains earlier, but also cuts winners short more often.",
+        "type": "bool",
+    },
+    "fast_ema_days": {
+        "label": "Fast line",
+        "help": "The short exponential average drawn on every chart. 8 days is the usual swing-trading choice.",
+        "type": "int", "min": 3, "max": 50, "unit": "days",
+    },
+    "pivot_reach": {
+        "label": "Turning point size",
+        "help": "How many days either side a high must beat to count as a turning point. Bigger finds fewer, more meaningful turns.",
+        "type": "int", "min": 1, "max": 15, "unit": "days",
+    },
+    "level_tolerance_percent": {
+        "label": "Same-level tolerance",
+        "help": "Turning points within this percent of each other are treated as the same level.",
+        "type": "float", "min": 0.1, "max": 5, "step": 0.1, "unit": "%",
+    },
+    "min_touches": {
+        "label": "Touches before it counts",
+        "help": "How many times price must have turned at a price before it is treated as a real level.",
+        "type": "int", "min": 2, "max": 6,
+    },
+    "zone_impulse_atr": {
+        "label": "Shelf strength",
+        "help": "How violently price must leave a quiet patch for it to count as a shelf, in multiples of a normal day's range.",
+        "type": "float", "min": 0.5, "max": 6, "step": 0.1, "unit": "× daily range",
+    },
+    "zone_base_bars": {
+        "label": "Shelf width",
+        "help": "How many quiet days before the move make up the shelf.",
+        "type": "int", "min": 1, "max": 8, "unit": "days",
+    },
+    "zone_max_tests": {
+        "label": "Allowed revisits",
+        "help": "A shelf is eaten away each time price returns. 0 means only shelves price has never been back to.",
+        "type": "int", "min": 0, "max": 5,
+    },
+    "use_levels_for_exits": {
+        "label": "Put stops and targets at real levels",
+        "help": "Stop under the shelf, target below the next ceiling — instead of a fixed distance that ignores the chart.",
+        "type": "bool",
+    },
+    "use_breakdown_exit": {
+        "label": "Sell when support breaks",
+        "help": "Closes the trade when a floor that had been holding gives way, rather than waiting for the stop.",
+        "type": "bool",
+    },
+    "min_reward_risk": {
+        "label": "Least acceptable reward for the risk",
+        "help": "Skip a trade unless the target is at least this many times the distance to the stop. Below 1 you must be right most of the time just to break even.",
+        "type": "float", "min": 0.5, "max": 6, "step": 0.1, "unit": "×",
+    },
     "max_hold_days": {
         "label": "Give up after",
         "help": "Sell a trade that has gone nowhere, so your money isn't stuck in a dud.",
@@ -403,10 +678,24 @@ SETTING_HELP: dict[str, dict] = {
 }
 
 
+# Settings every strategy honours, whatever its entry rule. Kept separate so a
+# new strategy inherits them without having to remember to list them.
+SHARED_SETTINGS = [
+    "fast_ema_days",
+    "use_ema_exit",
+    "use_levels_for_exits",
+    "use_breakdown_exit",
+    "min_reward_risk",
+    "pivot_reach",
+    "min_touches",
+]
+
+
 def describe_strategies() -> list[dict]:
     """Everything the app needs to render the strategy picker."""
     out = []
     for s in STRATEGIES.values():
+        keys = list(s.uses) + [k for k in SHARED_SETTINGS if k not in s.uses]
         out.append(
             {
                 "key": s.key,
@@ -415,7 +704,7 @@ def describe_strategies() -> list[dict]:
                 "best_for": s.best_for,
                 "how_it_works": s.how_it_works,
                 "settings": [
-                    {"key": k, **SETTING_HELP[k]} for k in s.uses if k in SETTING_HELP
+                    {"key": k, **SETTING_HELP[k]} for k in keys if k in SETTING_HELP
                 ],
             }
         )

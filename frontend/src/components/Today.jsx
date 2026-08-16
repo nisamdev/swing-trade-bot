@@ -2,11 +2,20 @@ import { useEffect, useState } from 'react'
 import { api, clockTime, money, money0, percent, signed, signedMoney, tone } from '../api.js'
 import { Empty, Notice, Section, Stat, Switch, Working } from './bits.jsx'
 
-export default function Today({ data, config, onRefresh, onGoTest }) {
+export default function Today({ data, config, onRefresh, onGoTest, openBuy, onBuyHandled }) {
   const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
   const [buying, setBuying] = useState(null)
+
+  // The Trade ideas page hands a symbol over by switching tabs; pick it up
+  // here so "Review and buy" lands straight on the confirm screen.
+  useEffect(() => {
+    if (openBuy) {
+      setBuying(openBuy)
+      onBuyHandled?.()
+    }
+  }, [openBuy, onBuyHandled])
 
   const account = data?.account
   const positions = data?.positions || []

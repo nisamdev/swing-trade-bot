@@ -15,8 +15,13 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from alpaca.data.enums import Adjustment, DataFeed
+from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import (
+    MarketMoversRequest,
+    MostActivesRequest,
+    StockBarsRequest,
+)
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
@@ -59,6 +64,7 @@ class Market:
 
         self._trading = TradingClient(api_key, secret_key, paper=paper)
         self._data = StockHistoricalDataClient(api_key, secret_key)
+        self._screener = ScreenerClient(api_key, secret_key)
 
     # ------------------------------------------------------------------ #
     # Account
@@ -161,14 +167,57 @@ class Market:
             ]
         return out
 
-    async def history_for_signals(self, symbols: list[str], days: int = 400) -> dict[str, list[Bar]]:
-        """Enough recent history to compute a 200-day average and then some.
+    async def history_for_signals(
+        self, symbols: list[str], days: int = 400
+    ) -> dict[str, list[Bar]]:
+        """Enough recent history for the averages, in *trading* days.
 
-        Calendar days, not trading days -- roughly 1.45 calendar days per
-        trading day, so 400 covers a 200-day average comfortably.
+        `days` is trading days; markets are shut at weekends and holidays, so
+        roughly 1.45 calendar days pass per trading day. The 1.6 multiplier
+        covers that with room to spare — important for the 800-day average,
+        which needs well over three calendar years behind it.
         """
-        start = date.today() - timedelta(days=int(days * 1.6))
+        start = date.today() - timedelta(days=int(days * 1.6) + 30)
         return await self.daily_bars(symbols, start)
+
+    async def market_universe(self) -> list[dict]:
+        """The day's busiest stocks and biggest movers, from Alpaca's screener.
+
+        Free on any account. Duplicates keep their first tag, and 'most active'
+        wins over 'mover' because volume implies you can actually get filled.
+        """
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        def add(symbol: str, source: str) -> None:
+            symbol = symbol.upper()
+            if symbol not in seen:
+                seen.add(symbol)
+                out.append({"symbol": symbol, "source": source})
+
+        try:
+            actives = await asyncio.to_thread(
+                self._screener.get_most_actives, MostActivesRequest(top=40)
+            )
+            for row in actives.most_actives:
+                add(row.symbol, "heavily traded today")
+        except Exception as exc:
+            log.warning("Alpaca most-actives failed: %s", exc)
+
+        try:
+            movers = await asyncio.to_thread(
+                self._screener.get_market_movers, MarketMoversRequest(top=25)
+            )
+            # Losers first: a pullback in a healthy stock is what most of these
+            # strategies are hunting, and that is where it shows up.
+            for row in movers.losers:
+                add(row.symbol, "falling hard today")
+            for row in movers.gainers:
+                add(row.symbol, "rising hard today")
+        except Exception as exc:
+            log.warning("Alpaca market-movers failed: %s", exc)
+
+        return out
 
     # ------------------------------------------------------------------ #
     # Orders

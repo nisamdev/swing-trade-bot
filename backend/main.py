@@ -165,6 +165,9 @@ class ConfigPatch(BaseModel):
     money: dict | None = None
     auto_trade: bool | None = None
     run_at: str | None = None
+    scan_at: str | None = None
+    scan_enabled: bool | None = None
+    scan_universe_size: int | None = None
 
 
 @app.put("/api/config")
@@ -293,7 +296,7 @@ async def prices(symbol: str, days: int = 260):
     rules = Rules(**cfg["rules"])
     # Fetch enough warm-up for the longest average, not just the window being
     # charted, or every indicator comes back empty on a short view.
-    needed = max(days, rules.trend_days, rules.slow_days) + 30
+    needed = max(days, rules.trend_days, rules.slow_days) + 60
     try:
         bars = await m.daily_bars(
             [symbol], date.today() - timedelta(days=int(needed * 1.6))
@@ -305,13 +308,16 @@ async def prices(symbol: str, days: int = 260):
     if not rows:
         raise HTTPException(404, f"No prices came back for {symbol.upper()}.")
 
-    from app.strategies import build_chart, get_strategy
+    from app.strategies import build_chart, get_strategy, plan_exits
 
     chart = build_chart(rows, rules)
     i = len(rows) - 1
     verdict = get_strategy(rules.strategy).entry(chart, i)
 
     cut = max(0, len(rows) - days)
+    plan = plan_exits(chart, i, chart.close[i])
+    overlay = chart.landscape.visible(i, chart.close[i])
+
     return {
         "symbol": symbol.upper(),
         "today": {
@@ -319,7 +325,16 @@ async def prices(symbol: str, days: int = 260):
             "reason": verdict.reason,
             "price": round(chart.close[i], 2),
             "as_of": rows[i].day.isoformat(),
+            "stop": round(plan.stop, 2),
+            "target": round(plan.target, 2),
+            "stop_reason": plan.stop_reason,
+            "target_reason": plan.target_reason,
+            "reward_risk": round(plan.reward_risk(chart.close[i]), 2),
         },
+        # Support/resistance lines and supply/demand bands near today's price.
+        "levels": overlay["levels"],
+        "zones": overlay["zones"],
+        "averages": {"trend": rules.trend_days, "ema_fast": rules.fast_ema_days},
         "bars": [
             {
                 "day": b.day.isoformat(),
@@ -328,8 +343,9 @@ async def prices(symbol: str, days: int = 260):
                 "low": round(b.low, 2),
                 "volume": b.volume,
                 "trend": round(t, 2) if (t := chart.trend[n]) is not None else None,
-                "fast": round(f, 2) if (f := chart.fast[n]) is not None else None,
-                "slow": round(s, 2) if (s := chart.slow[n]) is not None else None,
+                "ema_fast": (
+                    round(e, 2) if (e := chart.ema_fast[n]) is not None else None
+                ),
                 "rsi": round(r, 1) if (r := chart.rsi[n]) is not None else None,
             }
             for n, b in enumerate(rows)
@@ -352,6 +368,21 @@ async def bot_status():
 async def check_now():
     try:
         return await engine.run_round(triggered_by="you")
+    except MarketError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/ideas")
+async def ideas():
+    """The latest scan. Served from storage so opening the page is instant."""
+    saved = engine.last_ideas or await store.latest_scan()
+    return saved or {"ideas": [], "looked_at": 0, "at": None, "rejected": []}
+
+
+@app.post("/api/ideas/scan")
+async def run_scan():
+    try:
+        return await engine.run_scan(triggered_by="you")
     except MarketError as exc:
         raise HTTPException(502, str(exc)) from exc
 

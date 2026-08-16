@@ -3,14 +3,16 @@ import { api, money0 } from './api.js'
 import Today from './components/Today.jsx'
 import Test from './components/Test.jsx'
 import StrategyPage from './components/StrategyPage.jsx'
+import Ideas from './components/Ideas.jsx'
 import Journal from './components/Journal.jsx'
 import { Notice } from './components/bits.jsx'
 
 const TABS = [
   { id: 'today', key: '1', label: 'Today' },
-  { id: 'test', key: '2', label: 'Test an idea' },
-  { id: 'strategy', key: '3', label: 'Strategy' },
-  { id: 'journal', key: '4', label: 'Journal' },
+  { id: 'ideas', key: '2', label: 'Trade ideas' },
+  { id: 'test', key: '3', label: 'Test an idea' },
+  { id: 'strategy', key: '4', label: 'Strategy' },
+  { id: 'journal', key: '5', label: 'Journal' },
 ]
 
 export default function App() {
@@ -18,6 +20,7 @@ export default function App() {
   const [overview, setOverview] = useState(null)
   const [config, setConfig] = useState(null)
   const [strategies, setStrategies] = useState(null)
+  const [buySymbol, setBuySymbol] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('swing-theme') || 'system')
   const [fatal, setFatal] = useState(null)
 
@@ -139,6 +142,14 @@ export default function App() {
               config={config}
               onRefresh={refresh}
               onGoTest={() => setTab('test')}
+              openBuy={buySymbol}
+              onBuyHandled={() => setBuySymbol(null)}
+            />
+          )}
+          {!fatal && tab === 'ideas' && (
+            <Ideas
+              config={config}
+              onBuy={(symbol) => { setBuySymbol(symbol); setTab('today') }}
             />
           )}
           {/* Test seeds its form from the saved settings, so it must not mount

@@ -738,3 +738,88 @@ td.why { color: var(--muted); font-size: .82rem; min-width: 220px; }
   .signal-price { display: none; }
   .signal-why { grid-column: 1 / -1; }
 }
+
+/* ==========================================================================
+   Trade ideas
+   ========================================================================== */
+
+.ideas { display: grid; gap: 14px; }
+
+.idea {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+.idea.is-strong { border-left-color: var(--gain); }
+.idea.is-fair   { border-left-color: var(--hold); }
+.idea.is-weak   { border-left-color: var(--faint); }
+
+.idea-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.idea-sym { font-family: var(--font-data); font-size: 1.15rem; letter-spacing: 0; }
+.idea-score { text-align: right; line-height: 1.1; }
+.idea-score-num {
+  display: block;
+  font-family: var(--font-data);
+  font-size: 1.6rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.idea-headline { margin: 10px 0 14px; font-size: .93rem; }
+
+.idea-plan {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 14px;
+  padding: 13px 0;
+  border-top: 1px solid var(--rule-soft);
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.idea-more {
+  margin-top: 13px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tide);
+  font: inherit;
+  font-size: .86rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.idea-detail { margin-top: 16px; }
+
+.why-list { list-style: none; display: grid; gap: 7px; margin-bottom: 16px; }
+.why-list li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  font-size: .88rem;
+  align-items: baseline;
+}
+.why-mark { font-family: var(--font-data); font-weight: 600; }
+.why-mark.good { color: var(--gain); }
+.why-mark.warn { color: var(--hold); }
+
+.idea-exits {
+  display: grid;
+  gap: 10px;
+  padding: 13px 15px;
+  margin-bottom: 14px;
+  background: var(--sunk);
+  border-radius: var(--radius);
+}
+.idea-exits dt { font-size: .74rem; color: var(--muted); }
+.idea-exits dd { font-size: .87rem; }
+
+.reject-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 9px; }
+.reject { display: flex; gap: 9px; align-items: baseline; }
+.reject .sym { font-family: var(--font-data); font-weight: 600; font-size: .82rem; min-width: 48px; }
+
+/* Legend swatch for a zone band, which is an area rather than a line. */
+.band { width: 16px; height: 9px; border-radius: 1px; display: inline-block; }
+.band.gain { background: var(--gain); opacity: .3; }
+.band.loss { background: var(--loss); opacity: .3; }

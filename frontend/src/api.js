@@ -40,7 +40,9 @@ export const api = {
   savedBacktests: () => call('/backtests'),
   deleteBacktest: (id) => call(`/backtests/${id}`, { method: 'DELETE' }),
 
-  prices: (symbol) => call(`/prices/${symbol}`),
+  prices: (symbol, days = 260) => call(`/prices/${symbol}?days=${days}`),
+  ideas: () => call('/ideas'),
+  scanNow: () => post('/ideas/scan'),
   journal: () => call('/journal'),
   activity: (limit = 120) => call(`/activity?limit=${limit}`),
 

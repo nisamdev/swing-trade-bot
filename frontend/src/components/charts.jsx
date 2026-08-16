@@ -181,13 +181,25 @@ export function EquityCurve({ curve, benchmark = [], startingCash, height = 260 
   )
 }
 
-/** A stock's closing price with its trend line, for the watchlist detail. */
-export function PriceChart({ bars, height = 190 }) {
+/**
+ * Price with its two averages, plus the levels and shelves the app found.
+ *
+ * Zones are drawn as translucent bands rather than lines, because that is what
+ * they are: price turns in a band, not on a number. Levels are hairlines
+ * labelled with how many times they held, so a wall that stopped price four
+ * times looks different from one that stopped it twice.
+ */
+export function PriceChart({ bars, levels = [], zones = [], averages, height = 240 }) {
   const W = 900
   const H = height
   if (!bars?.length) return null
 
-  const values = bars.flatMap((b) => [b.close, b.trend].filter((v) => v != null))
+  const values = bars.flatMap((b) =>
+    [b.close, b.trend, b.ema_fast].filter((v) => v != null)
+  )
+  for (const z of zones) values.push(z.bottom, z.top)
+  for (const lv of levels) values.push(lv.price)
+
   const lo = Math.min(...values)
   const hi = Math.max(...values)
   const pad = (hi - lo) * 0.1 || 1
@@ -211,13 +223,26 @@ export function PriceChart({ bars, height = 190 }) {
 
   const ticks = niceTicks(yMin, yMax, 3)
 
+  const clamp = (v) => Math.max(PAD.top, Math.min(H - PAD.bottom, y(v)))
+
   return (
     <div className="plot">
       <div className="plot-legend">
         <span><i className="swatch" style={{ borderTopColor: 'var(--ink)' }} />Price</span>
-        <span><i className="swatch" style={{ borderTopColor: 'var(--tide)' }} />Long-term average</span>
+        <span><i className="swatch" style={{ borderTopColor: 'var(--tide)' }} />{averages?.trend ?? 200}-day average</span>
+        <span><i className="swatch" style={{ borderTopColor: 'var(--hold)' }} />{averages?.ema_fast ?? 8}-day line</span>
+        {zones.some((z) => z.kind === 'demand') && (
+          <span><i className="band gain" />Demand shelf</span>
+        )}
+        {zones.some((z) => z.kind === 'supply') && (
+          <span><i className="band loss" />Supply shelf</span>
+        )}
+        {levels.length > 0 && (
+          <span><i className="swatch" style={{ borderTopColor: 'var(--faint)', borderTopStyle: 'dashed' }} />Level (times held)</span>
+        )}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Price with its long-term average">
+
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Price with its averages, levels and shelves">
         {ticks.map((t) => (
           <g key={t}>
             <line
@@ -230,7 +255,45 @@ export function PriceChart({ bars, height = 190 }) {
             </text>
           </g>
         ))}
+
+        {/* Shelves sit behind everything: they are the ground, not a signal. */}
+        {zones.map((z, n) => {
+          const top = clamp(z.top)
+          const bottom = clamp(z.bottom)
+          return (
+            <rect
+              key={`${z.kind}-${z.day}-${n}`}
+              x={PAD.left}
+              y={top}
+              width={W - PAD.left - PAD.right}
+              height={Math.max(bottom - top, 2)}
+              fill={z.kind === 'demand' ? 'var(--gain)' : 'var(--loss)'}
+              opacity={z.tests === 0 ? 0.16 : 0.08}
+            />
+          )
+        })}
+
+        {levels.map((lv, n) => (
+          <g key={`lv-${lv.price}-${n}`}>
+            <line
+              x1={PAD.left} x2={W - PAD.right}
+              y1={clamp(lv.price)} y2={clamp(lv.price)}
+              stroke="var(--faint)"
+              strokeWidth={Math.min(0.7 + lv.touches * 0.35, 2.2)}
+              strokeDasharray="6 4"
+            />
+            <text
+              className="plot-axis"
+              x={W - PAD.right - 2} y={clamp(lv.price) - 3}
+              textAnchor="end"
+            >
+              {lv.touches}×
+            </text>
+          </g>
+        ))}
+
         <path d={line('trend')} fill="none" stroke="var(--tide)" strokeWidth="1.5" />
+        <path d={line('ema_fast')} fill="none" stroke="var(--hold)" strokeWidth="1.25" />
         <path d={line('close')} fill="none" stroke="var(--ink)" strokeWidth="1.75" strokeLinejoin="round" />
       </svg>
     </div>

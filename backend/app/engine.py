@@ -26,8 +26,9 @@ from zoneinfo import ZoneInfo
 
 from .market import Market, MarketError
 from .models import Money, Rules, buy_price
+from .scanner import scan
 from .store import Store
-from .strategies import build_chart, get_strategy
+from .strategies import build_chart, get_strategy, plan_exits
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,10 @@ NEW_YORK = ZoneInfo("America/New_York")
 # time of day the strategy was never tested at.
 RUN_WINDOW_MINUTES = 90
 
+# The scanner is read-only, so a late run is harmless -- but a 'midday' scan at
+# 3pm is not midday, and the setups it reports would be stale by the close.
+SCAN_WINDOW_MINUTES = 150
+
 DEFAULT_CONFIG = {
     "watchlist": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "GOOGL"],
     "rules": asdict(Rules()),
@@ -47,6 +52,11 @@ DEFAULT_CONFIG = {
     # Local New York time to run the daily round. Ten minutes after the open
     # lets the first prints settle without drifting far from the open price.
     "run_at": "09:40",
+    # The scanner sweeps a wide list of stocks instead of just the watchlist.
+    # Midday leaves a few hours to look at what it found before the close.
+    "scan_at": "12:30",
+    "scan_enabled": True,
+    "scan_universe_size": 60,
 }
 
 
@@ -58,6 +68,8 @@ class Engine:
         self._busy = asyncio.Lock()
         self.last_check: str | None = None
         self.last_result: dict | None = None
+        self.last_scan: str | None = None
+        self.last_ideas: dict | None = None
 
     # ------------------------------------------------------------------ #
     # Config
@@ -119,6 +131,7 @@ class Engine:
     async def _maybe_run(self) -> None:
         if self.market is None:
             return
+        await self._maybe_scan()
         cfg = await self.config()
         now = datetime.now(NEW_YORK)
         run_at = _parse_time(cfg.get("run_at", "09:40"))
@@ -325,7 +338,7 @@ class Engine:
             if not verdict.buy or atr <= 0:
                 continue
 
-            plan = _size_it(chart.close[i], atr, rules, money, account)
+            plan = _size_it(chart, i, rules, money, account)
             if plan is None:
                 await self.store.log(
                     f"{symbol} signalled a buy but the account is too small "
@@ -382,6 +395,71 @@ class Engine:
             suggestions.append(suggestion)
 
         return suggestions, considered
+
+    # ------------------------------------------------------------------ #
+    # The scanner
+    # ------------------------------------------------------------------ #
+
+    async def _maybe_scan(self) -> None:
+        cfg = await self.config()
+        if not cfg.get("scan_enabled", True):
+            return
+
+        now = datetime.now(NEW_YORK)
+        scan_at = _parse_time(cfg.get("scan_at", "12:30"))
+        already = (
+            self.last_scan is not None
+            and datetime.fromisoformat(self.last_scan).astimezone(NEW_YORK).date()
+            == now.date()
+        )
+        if already or now.time() < scan_at:
+            return
+
+        minutes_late = now.hour * 60 + now.minute - (scan_at.hour * 60 + scan_at.minute)
+        if minutes_late > SCAN_WINDOW_MINUTES:
+            return
+
+        status = await self.market.market_status()
+        if not status["open"]:
+            return
+
+        await self.run_scan(triggered_by="the midday schedule")
+
+    async def run_scan(self, triggered_by: str = "you") -> dict:
+        """Sweep the universe and rank what is set up. Never places an order.
+
+        Scanning is deliberately read-only. A wide sweep finds far more
+        candidates than a watchlist does, and letting it trade automatically
+        would turn a research tool into a machine for buying whatever moved.
+        """
+        if self.market is None:
+            raise MarketError("Alpaca is not connected — check your keys in .env.")
+
+        cfg = await self.config()
+        rules = Rules(**cfg["rules"])
+        money = Money(**cfg["money"])
+        account = await self.market.account()
+
+        await self.store.log(f"Scan started ({triggered_by}).")
+        result = await scan(
+            self.market,
+            _clean_watchlist(cfg["watchlist"]),
+            rules,
+            money,
+            account,
+            limit=int(cfg.get("scan_universe_size", 60)),
+        )
+        result["triggered_by"] = triggered_by
+        result["strategy"] = get_strategy(rules.strategy).name
+
+        self.last_scan = datetime.now(NEW_YORK).isoformat(timespec="seconds")
+        self.last_ideas = result
+        await self.store.save_scan(result)
+        await self.store.log(
+            f"Scan finished: looked at {result['looked_at']} stocks, "
+            f"found {len(result['ideas'])} worth a look."
+        )
+        return result
 
     # ------------------------------------------------------------------ #
     # Buying by hand
@@ -457,7 +535,7 @@ class Engine:
         if atr <= 0:
             raise MarketError(f"Could not measure {symbol}'s daily range.")
 
-        plan = _size_it(chart.close[i], atr, rules, money, account)
+        plan = _size_it(chart, i, rules, money, account)
         if plan is None:
             raise MarketError(
                 f"Your account is too small to buy even one share of {symbol} at "
@@ -518,7 +596,7 @@ class Engine:
         if _is_today(bars[-1].day) and len(bars) >= 2:
             i = len(bars) - 2
         atr = chart.atr[i] or 0.0
-        plan = _size_it(chart.close[i], atr, rules, money, account)
+        plan = _size_it(chart, i, rules, money, account)
         if plan is None:
             raise MarketError(
                 f"Your account is too small to buy one share of {symbol} at a "
@@ -564,20 +642,30 @@ class Engine:
 
 
 def _size_it(
-    price: float, atr: float, rules: Rules, money: Money, account: dict
+    chart, i: int, rules: Rules, money: Money, account: dict
 ) -> dict | None:
-    """Work out how many shares to buy so a stop-out costs a known amount.
+    """Work out how many shares to buy, and where to get out.
 
     The share count comes from the risk, not the other way round: decide you
     are willing to lose 1% of the account, measure how far away the stop is,
     and divide. A wide stop therefore buys fewer shares, so every losing trade
     costs roughly the same regardless of which stock it was.
+
+    The stop and target come from `plan_exits`, so the live bot places them at
+    the same places the backtest assumed -- under a demand shelf, below the
+    next ceiling -- rather than at a fixed distance the test never modelled.
     """
+    price = chart.close[i]
     entry = buy_price(price, money)
-    stop = entry - rules.stop_atr * atr
-    target = entry + rules.target_atr * atr
+    plan = plan_exits(chart, i, entry)
+    stop, target = plan.stop, plan.target
+
     per_share_risk = entry - stop
-    if per_share_risk <= 0:
+    if per_share_risk <= 0 or target <= entry:
+        return None
+
+    reward_risk = (target - entry) / per_share_risk
+    if reward_risk < rules.min_reward_risk:
         return None
 
     value = account["value"]
@@ -595,6 +683,9 @@ def _size_it(
         "entry": round(entry, 2),
         "stop": round(stop, 2),
         "target": round(target, 2),
+        "stop_reason": plan.stop_reason,
+        "target_reason": plan.target_reason,
+        "reward_risk": round(reward_risk, 2),
         "cost": round(shares * entry, 2),
         "risking": round(shares * per_share_risk, 2),
         "risking_percent": round(shares * per_share_risk / value * 100, 2) if value else 0,

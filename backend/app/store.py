@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS backtests (
     stats   TEXT NOT NULL
 );
 
+-- One row per scan, so you can look back at what was interesting last week
+-- and check honestly whether the high scorers actually worked out.
+CREATE TABLE IF NOT EXISTS scans (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    at     TEXT NOT NULL,
+    result TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS activity_at ON activity(at DESC);
 CREATE INDEX IF NOT EXISTS journal_at  ON journal(at DESC);
 """
@@ -147,6 +155,31 @@ class Store:
         return await asyncio.to_thread(
             self._read, "SELECT * FROM journal WHERE status='submitted' ORDER BY id"
         )
+
+    # -- scans -------------------------------------------------------------- #
+
+    async def save_scan(self, result: dict) -> int:
+        return await asyncio.to_thread(
+            self._write,
+            "INSERT INTO scans(at, result) VALUES(?, ?)",
+            (_now(), json.dumps(result)),
+        )
+
+    async def latest_scan(self) -> dict | None:
+        rows = await asyncio.to_thread(
+            self._read, "SELECT result FROM scans ORDER BY id DESC LIMIT 1"
+        )
+        return json.loads(rows[0]["result"]) if rows else None
+
+    async def recent_scans(self, limit: int = 10) -> list[dict]:
+        rows = await asyncio.to_thread(
+            self._read,
+            "SELECT id, at, result FROM scans ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        for r in rows:
+            r["result"] = json.loads(r["result"])
+        return rows
 
     # -- saved backtests ---------------------------------------------------- #
 

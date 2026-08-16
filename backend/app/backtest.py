@@ -36,7 +36,14 @@ from .models import (
     commission as _commission,
     sell_price as _sell_price,
 )
-from .strategies import Chart, build_chart, get_strategy
+from .strategies import (
+    Chart,
+    breakdown_exit,
+    build_chart,
+    ema_exit,
+    get_strategy,
+    plan_exits,
+)
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -50,9 +57,14 @@ class Fill:
 
     symbol: str
     reason: str
-    # Set on entries only: measured at the signal bar, so the stop reflects
-    # what was knowable when the decision was made.
+    # Entries only. Worked out at the signal bar, so the stop and target
+    # reflect what was knowable when the decision was made. Level-based exits
+    # are absolute prices -- a shelf does not move because we bought.
     atr: float = 0.0
+    stop: float = 0.0
+    target: float = 0.0
+    stop_reason: str = ""
+    target_reason: str = ""
 
 
 @dataclass
@@ -173,6 +185,10 @@ def run_backtest(
                 continue
             c, i = charts[symbol], todays_i[symbol]
             reason = strategy.exit(c, i, trade)
+            if reason is None:
+                reason = breakdown_exit(c, i, trade.entry_price)
+            if reason is None:
+                reason = ema_exit(c, i)
             if reason is None and (day - trade.entry_day).days >= rules.max_hold_days:
                 reason = (
                     f"Held {rules.max_hold_days} days without hitting the target — "
@@ -194,11 +210,32 @@ def run_backtest(
                 if atr is None or atr <= 0:
                     continue
                 verdict = strategy.entry(c, i)
-                if verdict.buy:
-                    pending_entries.append(
-                        Fill(symbol=symbol, reason=verdict.reason, atr=atr)
+                if not verdict.buy:
+                    continue
+
+                # Where would we get out? Decided now, from the chart as it
+                # stands today, not from tomorrow's price.
+                plan = plan_exits(c, i, c.close[i])
+                rr = plan.reward_risk(c.close[i])
+                if rr < rules.min_reward_risk:
+                    sim.notes.append(
+                        f"{day}: skipped {symbol} — the target is only {rr:.1f}× "
+                        f"the risk, below the {rules.min_reward_risk:g}× minimum"
                     )
-                    room -= 1
+                    continue
+
+                pending_entries.append(
+                    Fill(
+                        symbol=symbol,
+                        reason=verdict.reason,
+                        atr=atr,
+                        stop=plan.stop,
+                        target=plan.target,
+                        stop_reason=plan.stop_reason,
+                        target_reason=plan.target_reason,
+                    )
+                )
+                room -= 1
 
         # --- 5. Mark the account to market ---------------------------------
         for symbol, bar in todays_bar.items():
@@ -227,10 +264,25 @@ def _open_trade(
 ) -> None:
     money = sim.money
     entry = _buy_price(bar.open, money)
-    stop = entry - rules.stop_atr * order.atr
-    target = entry + rules.target_atr * order.atr
+    stop, target = order.stop, order.target
+
+    # The plan was drawn on yesterday's close. If the stock gapped overnight
+    # past either end of it, the setup no longer exists -- taking the trade
+    # anyway would mean buying at a price the plan never contemplated.
+    if not (stop < entry < target):
+        sim.notes.append(
+            f"{day}: skipped {order.symbol} — it gapped past the plan overnight "
+            f"(opened ${bar.open:,.2f}, stop ${stop:,.2f}, target ${target:,.2f})"
+        )
+        return
+
     per_share_risk = entry - stop
-    if per_share_risk <= 0:
+    rr = (target - entry) / per_share_risk
+    if rr < rules.min_reward_risk:
+        sim.notes.append(
+            f"{day}: skipped {order.symbol} — after the open the target was only "
+            f"{rr:.1f}× the risk"
+        )
         return
 
     equity = sim.equity(prices)
@@ -260,6 +312,8 @@ def _open_trade(
         stop=stop,
         target=target,
         reason=order.reason,
+        stop_reason=order.stop_reason,
+        target_reason=order.target_reason,
         costs=cost,
         peak=bar.close,
     )
@@ -478,6 +532,8 @@ def _report(
                 "held_days": t.held_days,
                 "reason": t.reason,
                 "exit_reason": t.exit_reason,
+                "stop_reason": t.stop_reason,
+                "target_reason": t.target_reason,
                 "win": t.is_win,
             }
             for t in sorted(trades, key=lambda x: x.entry_day)

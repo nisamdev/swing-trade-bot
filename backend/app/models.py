@@ -31,6 +31,32 @@ class Rules:
     # "Only buy a stock that is in a long-term uptrend."
     use_trend_filter: bool = True
     trend_days: int = 200
+    # The fast line. An 8-day exponential average hugs price closely, so it is
+    # the usual reference for "is this still moving my way?" -- drawn on every
+    # chart next to the 200-day, and optionally used as a trailing exit.
+    fast_ema_days: int = 8
+    use_ema_exit: bool = False
+
+    # --- Support, resistance, and supply/demand zones -----------------------
+    # How many days either side a bar must beat to count as a turning point.
+    # Bigger finds fewer, more meaningful turns -- and confirms them later.
+    pivot_reach: int = 3
+    # Turning points within this percent of each other are the same level.
+    level_tolerance_percent: float = 0.6
+    # How many touches before a price counts as a level at all.
+    min_touches: int = 2
+    # How violently price must leave a base for it to be a zone, in daily ranges.
+    zone_impulse_atr: float = 1.6
+    zone_base_bars: int = 3
+    # A zone revisited more than this many times is considered used up.
+    zone_max_tests: int = 1
+    # Put the stop under a demand zone and the target beneath the next supply
+    # zone, instead of at a fixed distance that ignores the chart.
+    use_levels_for_exits: bool = True
+    # Sell when a support level that had been holding gives way.
+    use_breakdown_exit: bool = True
+    # Refuse a trade whose target is not worth the risk of its stop.
+    min_reward_risk: float = 1.5
 
     # --- How the trade is exited ------------------------------------------
     # Stop and target are measured in ATR: the stock's own typical daily
@@ -102,6 +128,10 @@ class SimTrade:
     exit_day: date | None = None
     exit_price: float | None = None
     exit_reason: str | None = None
+    # Why the stop and target sit where they do -- "under the shelf at $412"
+    # rather than a bare number.
+    stop_reason: str = ""
+    target_reason: str = ""
     costs: float = 0.0
     # Highest close seen while the trade was open, for the trailing stop.
     peak: float = 0.0
