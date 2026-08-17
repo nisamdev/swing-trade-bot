@@ -41,6 +41,7 @@ export const api = {
   deleteBacktest: (id) => call(`/backtests/${id}`, { method: 'DELETE' }),
 
   prices: (symbol, days = 260) => call(`/prices/${symbol}?days=${days}`),
+  performance: (period = '3M') => call(`/performance?period=${period}`),
   ideas: () => call('/ideas'),
   scanNow: () => post('/ideas/scan'),
   journal: () => call('/journal'),

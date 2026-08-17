@@ -57,6 +57,14 @@ DEFAULT_CONFIG = {
     "scan_at": "12:30",
     "scan_enabled": True,
     "scan_universe_size": 60,
+    # Draw the day's candidates from the scanner instead of the watchlist.
+    # The strategy is still the final gate -- the scanner only decides which
+    # stocks get asked, never which get bought.
+    "trade_from_scanner": False,
+    # How many of the scanner's top-scoring names to consider. Keeping this
+    # small is the difference between "the best setups today" and "whatever
+    # moved today".
+    "scanner_top_n": 15,
 }
 
 
@@ -186,6 +194,26 @@ class Engine:
             pending = await self.market.pending_buy_symbols()
             clock = await self.market.market_status()
 
+            # Candidates from the scanner, if that is switched on. Your own
+            # watchlist is always appended, so turning this on widens the net
+            # rather than replacing what you chose to follow.
+            scanned: list[str] = []
+            if cfg.get("trade_from_scanner"):
+                try:
+                    found = await self.run_scan(triggered_by="the daily round")
+                    top = int(cfg.get("scanner_top_n", 15))
+                    scanned = [i["symbol"] for i in found["ideas"][:top]]
+                    await self.store.log(
+                        f"Scanner shortlisted {len(scanned)} names for today: "
+                        f"{', '.join(scanned) or 'none'}"
+                    )
+                except MarketError as exc:
+                    await self.store.log(
+                        f"Scan failed, falling back to the watchlist: {exc}",
+                        "warning",
+                    )
+            candidates = list(dict.fromkeys(scanned + watchlist))
+
             # A market order placed while the market is shut does not sit
             # harmlessly -- it queues and fills at whatever the next open
             # happens to be. So the round still evaluates and reports, but it
@@ -200,7 +228,7 @@ class Engine:
 
             sold = await self._sell_stale(positions, pending, rules, may_order)
             suggestions, considered = await self._look_for_buys(
-                watchlist, positions, pending, rules, money, account, may_order
+                candidates, positions, pending, rules, money, account, may_order
             )
 
             result = {
@@ -211,6 +239,7 @@ class Engine:
                 "account": account,
                 "strategy": get_strategy(rules.strategy).name,
                 "sold": sold,
+                "from_scanner": scanned,
                 "buys": suggestions,
                 "considered": considered,
             }

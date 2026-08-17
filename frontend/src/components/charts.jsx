@@ -62,6 +62,11 @@ export function EquityCurve({ curve, benchmark = [], startingCash, height = 260 
 
   const step = Math.max(1, Math.floor(curve.length / 6))
   const dateTicks = curve.filter((_, i) => i % step === 0 || i === curve.length - 1)
+  // Month labels are right for a multi-year backtest and useless for a
+  // four-day live account, where every tick would read the same.
+  const spanDays =
+    (new Date(curve[curve.length - 1].day) - new Date(curve[0].day)) / 86_400_000
+  const tickLabel = (day) => (spanDays > 180 ? day.slice(0, 7) : day.slice(5))
 
   function track(e) {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -152,7 +157,7 @@ export function EquityCurve({ curve, benchmark = [], startingCash, height = 260 
               y={H - 8}
               textAnchor={i === 0 ? 'start' : i === curve.length - 1 ? 'end' : 'middle'}
             >
-              {p.day.slice(0, 7)}
+              {tickLabel(p.day)}
             </text>
           )
         })}

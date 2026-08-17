@@ -4,15 +4,17 @@ import Today from './components/Today.jsx'
 import Test from './components/Test.jsx'
 import StrategyPage from './components/StrategyPage.jsx'
 import Ideas from './components/Ideas.jsx'
+import Performance from './components/Performance.jsx'
 import Journal from './components/Journal.jsx'
 import { Notice } from './components/bits.jsx'
 
 const TABS = [
   { id: 'today', key: '1', label: 'Today' },
   { id: 'ideas', key: '2', label: 'Trade ideas' },
-  { id: 'test', key: '3', label: 'Test an idea' },
-  { id: 'strategy', key: '4', label: 'Strategy' },
-  { id: 'journal', key: '5', label: 'Journal' },
+  { id: 'performance', key: '3', label: 'Performance' },
+  { id: 'test', key: '4', label: 'Test an idea' },
+  { id: 'strategy', key: '5', label: 'Strategy' },
+  { id: 'journal', key: '6', label: 'Journal' },
 ]
 
 export default function App() {
@@ -152,6 +154,7 @@ export default function App() {
               onBuy={(symbol) => { setBuySymbol(symbol); setTab('today') }}
             />
           )}
+          {!fatal && tab === 'performance' && <Performance />}
           {/* Test seeds its form from the saved settings, so it must not mount
               before they have arrived or it would start from stale defaults. */}
           {!fatal && tab === 'test' && config && strategies && (

@@ -27,6 +27,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
     GetOrdersRequest,
+    GetPortfolioHistoryRequest,
     MarketOrderRequest,
     StopLossRequest,
     TakeProfitRequest,
@@ -317,6 +318,74 @@ class Market:
             side = str(getattr(order.side, "value", order.side)).lower()
             if side == "buy":
                 out.add(order.symbol)
+        return out
+
+    async def portfolio_history(self, period: str = "3M") -> list[dict]:
+        """Daily account value straight from Alpaca.
+
+        Alpaca keeps this itself, which makes it the honest source: it counts
+        every fill, every fee and every position mark, rather than whatever
+        this app happened to be awake to record.
+        """
+        request = GetPortfolioHistoryRequest(period=period, timeframe="1D")
+        try:
+            history = await asyncio.to_thread(
+                self._trading.get_portfolio_history, request
+            )
+        except Exception as exc:
+            raise MarketError(f"Could not read your account history: {exc}") from exc
+
+        stamps = getattr(history, "timestamp", None) or []
+        equities = getattr(history, "equity", None) or []
+        out = []
+        for stamp, equity in zip(stamps, equities):
+            # Alpaca pads the series with zeros for days before the account
+            # existed. Kept, they make the starting value $0 and every return
+            # infinite.
+            if equity is None or float(equity) <= 0:
+                continue
+            when = (
+                stamp if isinstance(stamp, datetime)
+                else datetime.fromtimestamp(int(stamp), tz=timezone.utc)
+            )
+            out.append({"day": when.date().isoformat(), "value": float(equity)})
+        return out
+
+    async def filled_orders(self, since: date) -> list[dict]:
+        """Every fill since `since`, oldest first — the raw material for
+        working out what each completed trade actually made."""
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc),
+            limit=500,
+            nested=False,
+        )
+        try:
+            orders = await asyncio.to_thread(self._trading.get_orders, request)
+        except Exception as exc:
+            raise MarketError(f"Could not read your order history: {exc}") from exc
+
+        out = []
+        for order in orders:
+            filled_qty = float(getattr(order, "filled_qty", 0) or 0)
+            price = getattr(order, "filled_avg_price", None)
+            when = getattr(order, "filled_at", None)
+            if filled_qty <= 0 or price is None or when is None:
+                continue
+            out.append(
+                {
+                    "symbol": order.symbol,
+                    "side": str(getattr(order.side, "value", order.side)).lower(),
+                    "shares": filled_qty,
+                    "price": float(price),
+                    "at": when,
+                    "id": str(order.id),
+                    # Every order this app places is tagged, so its own trades
+                    # can be told apart from anything else using the account.
+                    "tag": getattr(order, "client_order_id", "") or "",
+                }
+            )
+        out.sort(key=lambda o: o["at"])
         return out
 
     async def open_orders(self) -> list[dict]:

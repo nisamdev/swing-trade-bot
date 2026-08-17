@@ -19,6 +19,13 @@ from app.backtest import run_backtest
 from app.engine import DEFAULT_CONFIG, Engine
 from app.market import Market, MarketError
 from app.models import Money, Rules
+from app.performance import (
+    BENCHMARK,
+    is_too_early,
+    ours,
+    round_trips,
+    summarise,
+)
 from app.store import Store
 from app.strategies import describe_strategies
 from config import settings
@@ -168,6 +175,8 @@ class ConfigPatch(BaseModel):
     scan_at: str | None = None
     scan_enabled: bool | None = None
     scan_universe_size: int | None = None
+    trade_from_scanner: bool | None = None
+    scanner_top_n: int | None = None
 
 
 @app.put("/api/config")
@@ -370,6 +379,66 @@ async def check_now():
         return await engine.run_round(triggered_by="you")
     except MarketError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/performance")
+async def performance(period: str = "3M"):
+    """How the live paper account is really doing, versus buy-and-hold."""
+    m = need_market()
+    try:
+        curve, positions = await asyncio.gather(
+            m.portfolio_history(period), m.positions()
+        )
+    except MarketError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    if not curve:
+        return {"stats": None, "curve": [], "trades": [],
+                "message": "Alpaca has no account history yet."}
+
+    first_day = date.fromisoformat(curve[0]["day"])
+    try:
+        fills = await m.filled_orders(first_day)
+        bench = await m.daily_bars([BENCHMARK], first_day)
+    except MarketError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    # Only trades this app placed. The paper account is shared with the older
+    # bot, and scoring its day trades as ours would make this dashboard
+    # meaningless -- 122 round trips held for zero days is not a swing strategy.
+    mine = [f for f in fills if ours(f)]
+    foreign = len(fills) - len(mine)
+
+    trades, _ = round_trips(mine)
+    stats = summarise(curve, trades, positions, bench.get(BENCHMARK) or [])
+
+    return {
+        "stats": stats,
+        "too_early": is_too_early(stats),
+        "curve": curve,
+        "benchmark_curve": _rebased(bench.get(BENCHMARK) or [], curve),
+        "trades": list(reversed(trades)),
+        "positions": positions,
+        # The equity curve is account-wide and cannot be filtered, so say so
+        # rather than letting someone read another bot's P&L as this one's.
+        "shared_account": foreign > 0,
+        "foreign_fills": foreign,
+    }
+
+
+def _rebased(bars, curve) -> list[dict]:
+    """The benchmark scaled to the same starting money, so the two lines on the
+    chart answer the same question rather than living on different axes."""
+    if not bars or not curve:
+        return []
+    start_value = curve[0]["value"]
+    first = bars[0].close
+    if not first:
+        return []
+    return [
+        {"day": b.day.isoformat(), "value": round(start_value * b.close / first, 2)}
+        for b in bars
+    ]
 
 
 @app.get("/api/ideas")
